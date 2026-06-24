@@ -1,6 +1,6 @@
 use std::{path::Path, str::FromStr};
 
-use oxc_allocator::{Allocator, CloneIn};
+use oxc_allocator::{Allocator, ArenaVec, CloneIn};
 use oxc_ast::{
     AstBuilder, AstKind,
     ast::{ImportDeclaration, ImportDeclarationSpecifier, ImportOrExportKind},
@@ -59,7 +59,7 @@ pub struct ConsistentTypeSpecifierStyle(Mode);
 declare_oxc_lint!(
     /// ### What it does
     ///
-    /// This rule either enforces or bans the use of inline type-only markers for named imports.
+    /// Enforces or bans the use of inline type-only markers for named imports.
     ///
     /// ### Why is this bad?
     ///
@@ -98,6 +98,7 @@ declare_oxc_lint!(
     conditional_fix,
     config = Mode,
     version = "0.16.11",
+    short_description = "Enforces or bans the use of inline type-only markers for named imports.",
 );
 
 impl Rule for ConsistentTypeSpecifierStyle {
@@ -217,7 +218,7 @@ fn gen_value_import_declaration<'c, 'a: 'c>(
     let specifiers: Vec<_> = specifiers.iter().map(|it| it.clone_in(&alloc)).collect();
     let import_declaration = ast_builder.alloc_import_declaration(
         SPAN,
-        Some(oxc_allocator::Vec::from_iter_in(specifiers, &alloc)),
+        Some(ArenaVec::from_iter_in(specifiers, &ast_builder)),
         import_decl.source.clone_in(&alloc),
         None,
         import_decl.with_clause.clone_in(&alloc),
@@ -254,7 +255,7 @@ fn gen_type_import_declaration<'c, 'a: 'c>(
         .collect();
     let import_declaration = ast_builder.alloc_import_declaration(
         SPAN,
-        Some(oxc_allocator::Vec::from_iter_in(specifiers, &alloc)),
+        Some(ArenaVec::from_iter_in(specifiers, &ast_builder)),
         import_decl.source.clone_in(&alloc),
         None,
         import_decl.with_clause.clone_in(&alloc),

@@ -1,4 +1,4 @@
-use oxc_allocator::{Box, Vec};
+use oxc_allocator::{ArenaBox, ArenaVec};
 use oxc_ast::ast::*;
 use oxc_span::{GetSpan, Span};
 use oxc_str::Str;
@@ -33,7 +33,7 @@ impl<'a, C: Config> ParserImpl<'a, C> {
     pub(crate) fn parse_directives_and_statements(
         &mut self,
         in_ts_namespace_body: bool,
-    ) -> (Vec<'a, Directive<'a>>, Vec<'a, Statement<'a>>) {
+    ) -> (ArenaVec<'a, Directive<'a>>, ArenaVec<'a, Statement<'a>>) {
         let mut directives = self.ast.vec();
         let mut statements = self.ast.vec();
 
@@ -256,7 +256,7 @@ impl<'a, C: Config> ParserImpl<'a, C> {
     }
 
     /// Section 14.2 Block Statement
-    pub(crate) fn parse_block(&mut self) -> Box<'a, BlockStatement<'a>> {
+    pub(crate) fn parse_block(&mut self) -> ArenaBox<'a, BlockStatement<'a>> {
         let span = self.start_span();
         let body = self.parse_normal_list(Kind::LCurly, Kind::RCurly, |p| {
             p.parse_statement_list_item(StatementContext::StatementList)
@@ -391,10 +391,9 @@ impl<'a, C: Config> ParserImpl<'a, C> {
             Kind::Let => {
                 // `for (let`
                 let start_span = self.start_span();
-                let checkpoint = self.checkpoint();
-                self.bump_any(); // bump `let`
                 // disallow `for (let in ...`
-                if self.cur_kind().is_after_let() {
+                if self.lexer.peek_token().kind().is_after_let() {
+                    self.bump_any(); // bump `let`
                     return self.parse_variable_declaration_for_statement(
                         span,
                         start_span,
@@ -404,7 +403,6 @@ impl<'a, C: Config> ParserImpl<'a, C> {
                     );
                 }
                 // Should be a relatively cold branch, since most tokens after `let` will be allowed in most files
-                self.rewind(checkpoint);
             }
             _ => {}
         }
@@ -537,15 +535,14 @@ impl<'a, C: Config> ParserImpl<'a, C> {
             }
         }
 
-        let init_declaration = self.alloc(using_decl);
-        self.parse_any_for_loop(span, parenthesis_opening_span, init_declaration, r#await)
+        self.parse_any_for_loop(span, parenthesis_opening_span, using_decl, r#await)
     }
 
     fn parse_any_for_loop(
         &mut self,
         span: u32,
         parenthesis_opening_span: Span,
-        init_declaration: Box<'a, VariableDeclaration<'a>>,
+        init_declaration: ArenaBox<'a, VariableDeclaration<'a>>,
         r#await: bool,
     ) -> Statement<'a> {
         match self.cur_kind() {
@@ -693,7 +690,24 @@ impl<'a, C: Config> ParserImpl<'a, C> {
         let span = self.start_span();
         self.bump_any(); // advance `switch`
         let discriminant = self.parse_paren_expression();
-        let cases = self.parse_normal_list(Kind::LCurly, Kind::RCurly, Self::parse_switch_case);
+        // A `switch` may contain at most one `default` clause. Track the first one
+        // and report only the first duplicate, all in the single parsing pass.
+        let mut first_default: Option<Span> = None;
+        let mut reported_duplicate = false;
+        let cases = self.parse_normal_list(Kind::LCurly, Kind::RCurly, |p| {
+            let case = p.parse_switch_case();
+            if case.test.is_none() {
+                match first_default {
+                    None => first_default = Some(case.span),
+                    Some(first_span) if !reported_duplicate => {
+                        p.error(diagnostics::switch_multiple_default_clause(first_span, case.span));
+                        reported_duplicate = true;
+                    }
+                    Some(_) => {}
+                }
+            }
+            case
+        });
         self.ast.statement_switch(self.end_span(span), discriminant, cases)
     }
 
@@ -775,7 +789,7 @@ impl<'a, C: Config> ParserImpl<'a, C> {
         self.ast.statement_try(self.end_span(span), block, handler, finalizer)
     }
 
-    fn parse_catch_clause(&mut self) -> Box<'a, CatchClause<'a>> {
+    fn parse_catch_clause(&mut self) -> ArenaBox<'a, CatchClause<'a>> {
         let span = self.start_span();
         self.bump_any(); // advance `catch`
         let pattern = if self.eat(Kind::LParen) {
@@ -821,27 +835,23 @@ impl<'a, C: Config> ParserImpl<'a, C> {
 
     /// Parse import statement or import expression.
     fn parse_import_statement(&mut self) -> Statement<'a> {
-        let checkpoint = self.checkpoint();
         let span = self.start_span();
-        self.bump_any();
-        if matches!(self.cur_kind(), Kind::Dot | Kind::LParen) {
-            // Parse the whole expression `import.meta.url` so a rewind is required.
-            self.rewind(checkpoint);
+        if matches!(self.lexer.peek_token().kind(), Kind::Dot | Kind::LParen) {
+            // Parse the whole expression `import.meta.url`.
             self.parse_expression_or_labeled_statement()
         } else {
+            self.bump_any(); // bump `import`
             self.parse_import_declaration(span, self.ctx.has_top_level())
         }
     }
 
     /// Parse statements that start with `sync`.
     fn parse_async_statement(&mut self, span: u32, stmt_ctx: StatementContext) -> Statement<'a> {
-        let checkpoint = self.checkpoint();
-        self.bump_any(); // bump `async`
-        let token = self.cur_token();
+        let token = self.lexer.peek_token();
         if token.kind() == Kind::Function && !token.is_on_new_line() {
+            self.bump_any(); // bump `async`
             return self.parse_function_declaration(span, /* async */ true, stmt_ctx);
         }
-        self.rewind(checkpoint);
         if self.is_ts && self.at_start_of_ts_declaration() {
             return self.parse_ts_declaration_statement(span, stmt_ctx);
         }

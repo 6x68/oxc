@@ -1,4 +1,4 @@
-use oxc_allocator::Box;
+use oxc_allocator::ArenaBox;
 use oxc_ast::{NONE, ast::*};
 use oxc_span::{FileExtension, GetSpan};
 use oxc_syntax::precedence::Precedence;
@@ -7,9 +7,9 @@ use super::{FunctionKind, Tristate};
 use crate::{Context, ParserConfig as Config, ParserImpl, diagnostics, lexer::Kind};
 
 struct ArrowFunctionHead<'a> {
-    type_parameters: Option<Box<'a, TSTypeParameterDeclaration<'a>>>,
-    params: Box<'a, FormalParameters<'a>>,
-    return_type: Option<Box<'a, TSTypeAnnotation<'a>>>,
+    type_parameters: Option<ArenaBox<'a, TSTypeParameterDeclaration<'a>>>,
+    params: ArenaBox<'a, FormalParameters<'a>>,
+    return_type: Option<ArenaBox<'a, TSTypeAnnotation<'a>>>,
     r#async: bool,
     span: u32,
 }
@@ -57,7 +57,17 @@ impl<'a, C: Config> ParserImpl<'a, C> {
 
     fn is_parenthesized_arrow_function_expression(&mut self) -> Tristate {
         match self.cur_kind() {
-            Kind::LParen | Kind::LAngle | Kind::Async => {
+            Kind::LParen => {
+                // `(1 + a)` can never be arrow parameters: the leading literal is not the start of
+                // a `BindingElement`, so the worker would bump past it and return `Tristate::False`
+                // (`!second.is_binding_identifier() && second != This`). Skip the lookahead.
+                if self.lexer.peek_token().kind().is_literal() {
+                    Tristate::False
+                } else {
+                    self.lookahead(Self::is_parenthesized_arrow_function_expression_worker)
+                }
+            }
+            Kind::LAngle | Kind::Async => {
                 self.lookahead(Self::is_parenthesized_arrow_function_expression_worker)
             }
             _ => Tristate::False,

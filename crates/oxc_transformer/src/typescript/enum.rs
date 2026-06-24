@@ -1,12 +1,12 @@
 use std::cell::Cell;
 
-use oxc_allocator::{TakeIn, Vec as ArenaVec};
+use oxc_allocator::{ArenaVec, TakeIn};
 use oxc_ast::{NONE, ast::*};
 use oxc_ast_visit::{VisitMut, walk_mut};
 use oxc_data_structures::stack::NonEmptyStack;
 use oxc_semantic::{ScopeFlags, ScopeId};
 use oxc_span::{SPAN, Span};
-use oxc_str::Ident;
+use oxc_str::{Ident, static_ident};
 use oxc_syntax::{
     constant_value::ConstantValue,
     number::NumberBase,
@@ -283,8 +283,11 @@ impl<'a> TypeScriptEnum {
             VariableDeclarationKind::Var
         };
         let decls = {
-            let binding_identifier = decl.id.clone();
-            let binding = BindingPattern::BindingIdentifier(ctx.alloc(binding_identifier));
+            let binding = ast.binding_pattern_binding_identifier_with_symbol_id(
+                decl.id.span,
+                decl.id.name,
+                enum_symbol_id,
+            );
             let decl =
                 ast.variable_declarator(span, kind, binding, NONE, Some(call_expression), false);
             ast.vec1(decl)
@@ -310,7 +313,9 @@ impl<'a> TypeScriptEnum {
     ) -> ArenaVec<'a, Statement<'a>> {
         let ast = ctx.ast;
 
-        let mut statements = ast.vec();
+        // Each member pushes exactly one statement, plus a final `return` statement,
+        // so the length is known up front — pre-size to avoid growth reallocations.
+        let mut statements = ast.vec_with_capacity(members.len() + 1);
 
         // If enum number has no initializer, its value will be the previous member value + 1,
         // if it's the first member, it will be `0`.
@@ -319,7 +324,7 @@ impl<'a> TypeScriptEnum {
 
         let mut prev_member_name = None;
 
-        for member in members.take_in(ctx.ast) {
+        for member in members.take_in(ctx) {
             let member_span = member.span;
             let member_name = member.id.static_name();
 
@@ -476,7 +481,7 @@ impl<'a> TypeScriptEnum {
 
         // Infinity
         let expr = if value.is_infinite() {
-            let infinity = ctx.ast.ident("Infinity");
+            let infinity = static_ident!("Infinity");
             let infinity_symbol_id = ctx.scoping().find_binding(ctx.current_scope_id(), infinity);
             ctx.create_ident_expr(SPAN, infinity, infinity_symbol_id, ReferenceFlags::Read)
         } else {
